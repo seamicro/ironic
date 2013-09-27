@@ -31,7 +31,7 @@ from oslo.config import cfg
 from ironic.common import safe_utils
 from ironic.openstack.common import excutils
 from ironic.openstack.common import log as logging
-
+from ironic.openstack.common.gettextutils import _
 
 LOG = logging.getLogger(__name__)
 
@@ -309,6 +309,8 @@ class ChassisNotEmpty(IronicException):
 class IPMIFailure(IronicException):
     message = _("IPMI call failed: %(cmd)s.")
 
+class SeamicroFailure(IronicException):
+    message = _("Seamicro command failed: %(cmd)s.")
 
 class SSHConnectFailed(IronicException):
     message = _("Failed to establish SSH connection to host %(host)s.")
