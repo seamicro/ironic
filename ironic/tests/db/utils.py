@@ -32,6 +32,16 @@ ipmi_info = json.dumps(
             }
          })
 
+seamicro_info = json.dumps(
+        {
+            'seamicro': {
+                "address": "1.2.3.4",
+                "username": "admin",
+                "password": "fake",
+                "ccard": "0/0",
+            }
+         })
+
 ssh_info = json.dumps(
         {
             'ssh': {
