@@ -309,8 +309,10 @@ class ChassisNotEmpty(IronicException):
 class IPMIFailure(IronicException):
     message = _("IPMI call failed: %(cmd)s.")
 
+
 class SeamicroFailure(IronicException):
     message = _("Seamicro command failed: %(cmd)s.")
+
 
 class SSHConnectFailed(IronicException):
     message = _("Failed to establish SSH connection to host %(host)s.")

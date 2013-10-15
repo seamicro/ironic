@@ -22,8 +22,8 @@ from ironic.drivers import base
 from ironic.drivers.modules import fake
 from ironic.drivers.modules import ipminative
 from ironic.drivers.modules import ipmitool
-from ironic.drivers.modules import seamicrotool
 from ironic.drivers.modules import pxe
+from ironic.drivers.modules import seamicrotool
 from ironic.drivers.modules import ssh
 
 
@@ -44,6 +44,7 @@ class FakeIPMIToolDriver(base.BaseDriver):
         self.deploy = fake.FakeDeploy()
         self.vendor = self.power
 
+
 class FakeSeamicroToolDriver(base.BaseDriver):
     """Example implementation of a Driver."""
 
@@ -51,6 +52,7 @@ class FakeSeamicroToolDriver(base.BaseDriver):
         self.power = seamicrotool.SeamicroPower()
         self.deploy = fake.FakeDeploy()
         self.vendor = self.power
+
 
 class FakePXEDriver(base.BaseDriver):
     """Example implementation of a Driver."""

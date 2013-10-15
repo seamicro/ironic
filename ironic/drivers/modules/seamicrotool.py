@@ -62,6 +62,7 @@ LOG = logging.getLogger(__name__)
 
 VALID_BOOT_DEVICES = ['pxe', 'disk']
 
+
 @contextlib.contextmanager
 def _make_password_file(password):
     try:
@@ -97,46 +98,49 @@ def _parse_driver_info(node):
             'uuid': node.get('uuid')
            }
 
+
 def _connect(hostname, username, password, command):
         ssh = paramiko.SSHClient()
         ssh.load_system_host_keys()
-        ssh.set_missing_host_key_policy( paramiko.AutoAddPolicy() )
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-                ssh.connect(hostname,
-                            username=username,
-                            password=password,
-                            timeout=30)
+            ssh.connect(hostname,
+                       username=username,
+                       password=password,
+                       timeout=30)
         except paramiko.AuthenticationException as ex:
-                return 2, "Could not connect: %s" % ex
+            return 2, "Could not connect: %s" % ex
         except paramiko.BadAuthenticationType as ex:
-                return 2, "The remote host doesn't allow password authentication: %s" % ex
+            return 2, "The remote host doesn't allow password authentication: %s" % ex
         except paramiko.SSHException as ex:
-                return 2, "The remote host doesn't allow password authentication: %s" % ex
+            return 2, "The remote host doesn't allow password authentication: %s" % ex
         except:
-                return 2, "Unhandled exception in ssh connection. Check paramaters passed in."
+            return 2, "Unhandled exception in ssh connection. Check paramaters passed in."
 
         try:
-                stdin, stdout, stderr = ssh.exec_command(command,-1,60)
+            stdin, stdout, stderr = ssh.exec_command(command, -1, 60)
         except:
-                return 2, "Command timedout or terminated unexpectedly"
-
-
+            return 2, "Command timedout or terminated unexpectedly"
 
         try:
-                outputBuffer = stdout.read()
+            outputBuffer = stdout.read()
         except:
-                return 2, "Command output could not be opened."
+            return 2, "Command output could not be opened."
 
         ssh.close()
-
         return 0, outputBuffer
 
-def _exec_seamicrotool(driver_info, command):
 
-    returnCode, commandOutput = _connect(driver_info['address'], driver_info['username'], driver_info['password'], command)
+def _exec_seamicrotool(driver_info, command):
+    returnCode, commandOutput = _connect(
+        driver_info['address'],
+        driver_info['username'],
+        driver_info['password'],
+        command)
     LOG.debug(_("seamicro stdout: '%(out)s', stderr: '%(err)s'"),
                   locals())
-    return commandOutput,returnCode
+    return commandOutput, returnCode
+
 
 def _power_on(driver_info):
     """Turn the power to this node ON."""
@@ -157,12 +161,13 @@ def _power_on(driver_info):
             raise loopingcall.LoopingCallDone()
         try:
             retries[0] += 1
-			# either this or a REST APi call. 
-            _exec_seamicrotool(driver_info, "enable;power-on server " + driver_info['ccard'] + " no-confirm")
+            # either this or a REST APi call.
+            command = "enable; power-on server %(ccard)s no-confirm" % driver_info
+            _exec_seamicrotool(driver_info, command)
         except Exception:
             # Log failures but keep trying
-            LOG.warning(_("Seamicro Power on failed for node %s.")
-                    % driver_info['uuid'])
+            LOG.warning(
+                _("Seamicro Power on failed for node %s." % driver_info['uuid']))
 
     timer = loopingcall.FixedIntervalLoopingCall(_wait_for_power_on,
                                                  state, retries)
@@ -189,7 +194,7 @@ def _power_off(driver_info):
             raise loopingcall.LoopingCallDone()
         try:
             retries[0] += 1
-			# Try for 3 times. Either this call or Vince's REST Api call
+            # Try for 3 times. Either this call or Vince's REST Api call
             _exec_seamicrotool(driver_info, "enable;power-off server " + driver_info['ccard'] + " no-confirm")
         except Exception:
             # Log failures but keep trying
@@ -204,13 +209,14 @@ def _power_off(driver_info):
 
 def _power_status(driver_info):
     out_err = _exec_seamicrotool(driver_info, "enable;show server summary " + driver_info['ccard'])
-	# TODO(vikhub): parse the list and decide the status. Or use REST plugin from Vince
+    # TODO(vikhub): parse the list and decide the status. Or use REST plugin from Vince
     if out_err[1] == "up":
         return states.POWER_ON
     elif out_err[1] == "down":
         return states.POWER_OFF
     else:
         return states.ERROR
+
 
 def _power_on_pxe_next_boot(driver_info):
 
@@ -284,14 +290,14 @@ class SeamicroPower(base.PowerInterface):
         if state != states.POWER_ON:
             raise exception.PowerStateFailure(pstate=states.POWER_ON)
 
-	def activate_node(self, node):
-		""" Turns power on to the node ON using the PXE flag. returns: status represented by one of the States"""
+    def activate_node(self, node):
+        """ Turns power on to the node ON using the PXE flag. returns: status represented by one of the States"""
 
-		driver_info = _parse_driver_info(node)
-		if _power_status(driver_info) == states.POWER_ON:
-			LOG.warning(_("Active node is called, but node %s is already powered up.") % driver_info['uuid'])
-		
-		return _power_on_pxe_next_boot(driver_info)
+        driver_info = _parse_driver_info(node)
+        if _power_status(driver_info) == states.POWER_ON:
+            LOG.warning(_("Active node is called, but node %s is already powered up.") % driver_info['uuid'])
+
+        return _power_on_pxe_next_boot(driver_info)
 
     @task_manager.require_exclusive_lock
     def _set_boot_device(self, task, node, device, persistent=False):
@@ -309,13 +315,12 @@ class SeamicroPower(base.PowerInterface):
 
         driver_info = _parse_driver_info(node)
         if device not in VALID_BOOT_DEVICES:
-            raise exception.InvalidParameterValue(_(
-                "Invalid boot device %s specified.") % device)
+            raise exception.InvalidParameterValue(_("Invalid boot device %s specified.") % device)
         ## If persistent we set it in the bios boot order, else we have to figure out to store using-pxe
 
         cmd1 = 'enable;configure terminal; server id'
         if persistent:
-            if ( device == VALID_BOOT_DEVICES[0]): 
+            if (device == VALID_BOOT_DEVICES[0]):
                 cmd1 = 'enable;configure terminal;server id ' + driver_info['ccard'] + '; bios boot-order pxe,hd0'
             else:
                 cmd1 = 'enable;configure terminal;server id ' + driver_info['ccard'] + '; bios boot-order hd0'

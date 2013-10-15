@@ -22,6 +22,7 @@ from ironic.drivers import base
 from ironic.drivers.modules import ipminative
 from ironic.drivers.modules import ipmitool
 from ironic.drivers.modules import pxe
+from ironic.drivers.modules import seamicrotool
 from ironic.drivers.modules import ssh
 
 
@@ -40,19 +41,21 @@ class PXEAndIPMIToolDriver(base.BaseDriver):
         self.rescue = self.deploy
         self.vendor = pxe.IPMIVendorPassthru()
 
+
 class PXEAndSeamicroToolDriver(base.BaseDriver):
     """PXE + SeamicroTool driver.
 
     This driver implements the `core` functionality, combining
-    :class:ironic.drivers.modules.seamicrotools for power on/off and reboot with
-    :class:ironic.driver.pxe.PXE for image deployment. Implementations are in
-    those respective classes; this class is merely the glue between them.
-    """
+    :class:ironic.drivers.modules.seamicrotools for power on/off and reboot
+    with :class:ironic.driver.pxe.PXE for image deployment. Implementations
+    are in those respective classes; this class is merely the glue between
+    them. """
 
     def __init__(self):
         self.power = seamicrotool.SeamicroPower()
         self.deploy = pxe.PXEDeploy()
         self.rescue = self.deploy
+
 
 class PXEAndSSHDriver(base.BaseDriver):
     """PXE + SSH driver.
