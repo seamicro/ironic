@@ -17,6 +17,8 @@ Tests for ACL. Checks whether certain kinds of requests
 are blocked or allowed to be processed.
 """
 
+import mock
+
 from oslo.config import cfg
 
 from ironic.api import acl
@@ -32,7 +34,7 @@ class TestACL(base.FunctionalTest):
         super(TestACL, self).setUp()
 
         self.environ = {'fake.cache': utils.FakeMemcache()}
-        self.fake_node = db_utils.get_test_node()
+        self.fake_node = db_utils.get_test_node(chassis_id=None)
         self.dbapi = db_api.get_instance()
         self.node_path = '/nodes/%s' % self.fake_node['uuid']
 
@@ -53,14 +55,15 @@ class TestACL(base.FunctionalTest):
         self.assertEqual(response.status_int, 401)
 
     def test_authenticated(self):
-        self.mox.StubOutWithMock(self.dbapi, 'get_node')
-        self.dbapi.get_node(self.fake_node['uuid']).AndReturn(self.fake_node)
-        self.mox.ReplayAll()
+        with mock.patch.object(self.dbapi, 'get_node',
+                               autospec=True) as mock_get_node:
+            mock_get_node.return_value = self.fake_node
 
-        response = self.get_json(self.node_path,
+            response = self.get_json(self.node_path,
                                  headers={'X-Auth-Token': utils.ADMIN_TOKEN})
 
-        self.assertEquals(response['uuid'], self.fake_node['uuid'])
+            self.assertEquals(response['uuid'], self.fake_node['uuid'])
+            mock_get_node.assert_called_once_with(self.fake_node['uuid'])
 
     def test_non_admin(self):
         response = self.get_json(self.node_path,

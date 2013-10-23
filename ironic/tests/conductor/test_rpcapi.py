@@ -19,6 +19,8 @@
 Unit Tests for :py:class:`ironic.conductor.rpcapi.ConductorAPI`.
 """
 
+import fixtures
+
 from oslo.config import cfg
 
 from ironic.common import states
@@ -27,7 +29,6 @@ from ironic.db import api as dbapi
 from ironic import objects
 from ironic.openstack.common import context
 from ironic.openstack.common import jsonutils as json
-from ironic.openstack.common import rpc
 from ironic.tests.db import base
 from ironic.tests.db import utils as dbutils
 
@@ -52,7 +53,7 @@ class RPCAPITestCase(base.DbTestCase):
         ctxt = context.get_admin_context()
         rpcapi = conductor_rpcapi.ConductorAPI(topic='fake-topic')
 
-        expected_retval = 'hello world' if method == 'call' else None
+        expected_retval = 'hello world' if rpc_method == 'call' else None
         expected_version = kwargs.pop('version', rpcapi.RPC_API_VERSION)
         expected_msg = rpcapi.make_msg(method, **kwargs)
 
@@ -71,7 +72,9 @@ class RPCAPITestCase(base.DbTestCase):
             if expected_retval:
                 return expected_retval
 
-        self.stubs.Set(rpc, rpc_method, _fake_rpc_method)
+        self.useFixture(fixtures.MonkeyPatch(
+                "ironic.openstack.common.rpc.%s" % rpc_method,
+                _fake_rpc_method))
 
         retval = getattr(rpcapi, method)(ctxt, **kwargs)
 
@@ -90,8 +93,32 @@ class RPCAPITestCase(base.DbTestCase):
                           'call',
                           node_obj=self.fake_node)
 
-    def test_start_power_state_change(self):
-        self._test_rpcapi('start_power_state_change',
+    def test_change_node_power_state(self):
+        self._test_rpcapi('change_node_power_state',
                           'cast',
                           node_obj=self.fake_node,
                           new_state=states.POWER_ON)
+
+    def test_pass_vendor_info(self):
+        ctxt = context.get_admin_context()
+        rpcapi = conductor_rpcapi.ConductorAPI(topic='fake-topic')
+        expected_retval = 'hello world'
+
+        def _fake_rpc_method(*args, **kwargs):
+                return expected_retval
+
+        self.useFixture(fixtures.MonkeyPatch(
+                'ironic.openstack.common.rpc.call', _fake_rpc_method))
+        retval = rpcapi.vendor_passthru(ctxt, node_id=self.fake_node['uuid'],
+                                    driver_method='foo', info={'bar': 'baz'})
+        self.assertEqual(retval, expected_retval)
+
+    def test_do_node_deploy(self):
+        self._test_rpcapi('do_node_deploy',
+                          'cast',
+                          node_obj=self.fake_node)
+
+    def test_do_node_tear_down(self):
+        self._test_rpcapi('do_node_tear_down',
+                          'cast',
+                          node_obj=self.fake_node)

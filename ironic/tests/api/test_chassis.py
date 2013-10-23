@@ -238,6 +238,12 @@ class TestPatch(base.FunctionalTest):
                                      'op': 'add'}], expect_errors=True)
         self.assertEqual(response.status_int, 403)
 
+    def test_remove_uuid(self):
+        cdict = dbutils.get_test_chassis()
+        self.assertRaises(webtest.app.AppError, self.patch_json,
+                          '/chassis/%s' % cdict['uuid'],
+                          [{'path': '/uuid', 'op': 'remove'}])
+
 
 class TestPost(base.FunctionalTest):
 
@@ -295,7 +301,7 @@ class TestDelete(base.FunctionalTest):
         self.dbapi.create_node(ndict)
         response = self.delete('/chassis/%s' % cdict['uuid'],
                                expect_errors=True)
-        self.assertEqual(response.status_int, 500)
+        self.assertEqual(response.status_int, 400)
         self.assertEqual(response.content_type, 'application/json')
         self.assertTrue(response.json['error_message'])
 

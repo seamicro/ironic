@@ -196,11 +196,15 @@ class Connection(api.Connection):
 
     @objects.objectify(objects.Node)
     def get_associated_nodes(self):
-        pass
+        query = model_query(models.Node).\
+                    filter(models.Node.instance_uuid != None)
+        return query.all()
 
     @objects.objectify(objects.Node)
     def get_unassociated_nodes(self):
-        pass
+        query = model_query(models.Node).\
+                    filter(models.Node.instance_uuid == None)
+        return query.all()
 
     @objects.objectify(objects.Node)
     def reserve_nodes(self, tag, nodes):
@@ -277,11 +281,8 @@ class Connection(api.Connection):
 
     @objects.objectify(objects.Node)
     def get_node_by_instance(self, instance):
-        query = model_query(models.Node)
-        if uuidutils.is_uuid_like(instance):
-            query = query.filter_by(instance_uuid=instance)
-        else:
-            query = query.filter_by(instance_name=instance)
+        query = model_query(models.Node).\
+                        filter_by(instance_uuid=instance)
 
         try:
             result = query.one()
@@ -302,6 +303,9 @@ class Connection(api.Connection):
                 raise exception.NodeNotFound(node=node)
             if node_ref['reservation'] is not None:
                 raise exception.NodeLocked(node=node)
+            if node_ref['instance_uuid'] is not None:
+                raise exception.NodeAssociated(node=node,
+                                            instance=node_ref['instance_uuid'])
 
             # Get node ID, if an UUID was supplied. The ID is
             # required for deleting all ports, attached to the node.

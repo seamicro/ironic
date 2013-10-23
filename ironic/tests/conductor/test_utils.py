@@ -18,6 +18,8 @@
 
 """Tests for Ironic Manager test utils."""
 
+import mock
+
 from ironic.conductor import resource_manager
 from ironic.tests import base
 from ironic.tests.conductor import utils
@@ -42,30 +44,31 @@ class UtilsTestCase(base.TestCase):
                                                           'ironic.drivers')
 
         # confirm that stevedore did not scan the actual entrypoints
-        self.assertNotEqual(mgr.namespace, 'ironic.drivers')
+        self.assertNotEqual(mgr._extension_manager.namespace, 'ironic.drivers')
         # confirm mgr has only one extension
-        self.assertEqual(len(mgr.extensions), 1)
+        self.assertEqual(len(mgr._extension_manager.extensions), 1)
         # confirm that we got a reference to the extension in this manager
-        self.assertEqual(mgr.extensions[0], ext)
+        self.assertEqual(mgr._extension_manager.extensions[0], ext)
         # confirm that it is the "fake" driver we asked for
         self.assertEqual("%s" % ext.entry_point,
                          "fake = ironic.drivers.fake:FakeDriver")
+        # Confirm driver is loaded
+        self.assertIn('fake', mgr.names)
 
     def test_get_mocked_node_mgr(self):
-        self.mox.StubOutWithMock(utils, 'get_mockable_extension_manager')
 
         class ext(object):
             def __init__(self, name):
                 self.obj = name
 
-        utils.get_mockable_extension_manager('foo', 'ironic.drivers').\
-                AndReturn(('foo-manager', ext('foo-extension')))
-        self.mox.ReplayAll()
+        with mock.patch.object(utils, 'get_mockable_extension_manager') \
+                as get_mockable_mock:
+            get_mockable_mock.return_value = ('foo-manager',
+                                              ext('foo-extension'))
 
-        driver = utils.get_mocked_node_manager('foo')
+            driver = utils.get_mocked_node_manager('foo')
 
-        self.assertEqual(resource_manager.NodeManager._driver_factory,
-                         'foo-manager')
-        self.assertEqual(driver, 'foo-extension')
-
-        self.mox.VerifyAll()
+            self.assertEqual(resource_manager.NodeManager._driver_factory,
+                             'foo-manager')
+            self.assertEqual(driver, 'foo-extension')
+            get_mockable_mock.assert_called_once_with('foo', 'ironic.drivers')

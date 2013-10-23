@@ -44,20 +44,42 @@ class DbNodeTestCase(base.DbTestCase):
         uuids.sort()
         return uuids
 
+    def _create_associated_nodes(self):
+        uuids = []
+        uuids_with_instance = []
+
+        for i in xrange(1, 5):
+            uuid = uuidutils.generate_uuid()
+            uuids.append(unicode(uuid))
+            if i < 3:
+                instance_uuid = uuidutils.generate_uuid()
+                uuids_with_instance.append(unicode(uuid))
+            else:
+                instance_uuid = None
+
+            n = utils.get_test_node(id=i,
+                                    uuid=uuid,
+                                    instance_uuid=instance_uuid)
+            self.dbapi.create_node(n)
+
+        uuids.sort()
+        uuids_with_instance.sort()
+        return (uuids, uuids_with_instance)
+
     def test_create_node(self):
         self._create_test_node()
 
     def test_get_nodes_by_chassis_id(self):
         ch = utils.get_test_chassis()
         ch = self.dbapi.create_chassis(ch)
-        n = self._create_test_node()
+        n = self._create_test_node(chassis_id=ch['id'])
         nodes = self.dbapi.get_nodes_by_chassis(ch['id'])
         self.assertEqual(n['uuid'], nodes[0]['uuid'])
 
     def test_get_nodes_by_chassis_uuid(self):
         ch = utils.get_test_chassis()
         ch = self.dbapi.create_chassis(ch)
-        n = self._create_test_node()
+        n = self._create_test_node(chassis_id=ch['id'])
         nodes = self.dbapi.get_nodes_by_chassis(ch['uuid'])
         self.assertEqual(n['id'], nodes[0]['id'])
 
@@ -98,7 +120,7 @@ class DbNodeTestCase(base.DbTestCase):
         self.assertEqual(uuids.sort(), res_uuids.sort())
 
     def test_get_node_by_instance(self):
-        n = self._create_test_node()
+        n = self._create_test_node(instance_uuid='fake-uuid-1234')
 
         res = self.dbapi.get_node_by_instance(n['instance_uuid'])
         self.assertEqual(n['uuid'], res['uuid'])
@@ -132,6 +154,11 @@ class DbNodeTestCase(base.DbTestCase):
         self.dbapi.reserve_nodes('fake-reservation', [uuid])
         self.assertRaises(exception.NodeLocked,
                           self.dbapi.destroy_node, n['id'])
+
+    def test_destroy_associated_node(self):
+        n = self._create_test_node(instance_uuid='fake-uuid-1234')
+        self.assertRaises(exception.NodeAssociated,
+                          self.dbapi.destroy_node, n['uuid'])
 
     def test_ports_get_destroyed_after_destroying_a_node(self):
         n = self._create_test_node()
@@ -295,3 +322,21 @@ class DbNodeTestCase(base.DbTestCase):
         for uuid in uuids:
             res = self.dbapi.get_node(uuid)
             self.assertEqual(None, res['reservation'])
+
+    def test_get_associated_nodes(self):
+        (uuids, uuids_with_instance) = self._create_associated_nodes()
+
+        res = self.dbapi.get_associated_nodes()
+        res_uuids = [r.uuid for r in res]
+        res_uuids.sort()
+        self.assertEqual(uuids_with_instance, res_uuids)
+
+    def test_get_unassociated_nodes(self):
+        (uuids, uuids_with_instance) = self._create_associated_nodes()
+        uuids_without_instance = list(set(uuids) - set(uuids_with_instance))
+        uuids_without_instance.sort()
+
+        res = self.dbapi.get_unassociated_nodes()
+        res_uuids = [r.uuid for r in res]
+        res_uuids.sort()
+        self.assertEqual(uuids_without_instance, res_uuids)

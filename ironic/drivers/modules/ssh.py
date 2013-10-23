@@ -36,7 +36,6 @@ from ironic.common import states
 from ironic.common import utils
 from ironic.conductor import task_manager
 from ironic.drivers import base
-from ironic.openstack.common import jsonutils as json
 from ironic.openstack.common import log as logging
 
 CONF = cfg.CONF
@@ -109,14 +108,13 @@ def _exec_ssh_command(ssh_obj, command):
 
 
 def _parse_driver_info(node):
-    driver_info = json.loads(node.get('driver_info', ''))
-    ssh_info = driver_info.get('ssh')
-    address = ssh_info.get('address', None)
-    username = ssh_info.get('username', None)
-    password = ssh_info.get('password', None)
-    port = ssh_info.get('port', 22)
-    key_filename = ssh_info.get('key_filename', None)
-    virt_type = ssh_info.get('virt_type', None)
+    info = node.get('driver_info', {})
+    address = info.get('ssh_address', None)
+    username = info.get('ssh_username', None)
+    password = info.get('ssh_password', None)
+    port = info.get('ssh_port', 22)
+    key_filename = info.get('ssh_key_filename', None)
+    virt_type = info.get('ssh_virt_type', None)
 
     # NOTE(deva): we map 'address' from API to 'host' for common utils
     res = {
@@ -133,8 +131,12 @@ def _parse_driver_info(node):
 
     cmd_set = COMMAND_SETS.get(virt_type, None)
     if not cmd_set:
+        valid_values = ', '.join(COMMAND_SETS.keys())
         raise exception.InvalidParameterValue(_(
-            "SSHPowerDriver unknown virt_type (%s).") % cmd_set)
+            "SSHPowerDriver '%(virt_type)s' is not a valid virt_type, "
+            "supported types are: %(valid)s") %
+            {'virt_type': virt_type, 'valid': valid_values})
+
     res['cmd_set'] = cmd_set
 
     if not address or not username:
@@ -158,13 +160,16 @@ def _get_power_status(ssh_obj, driver_info):
     """Returns a node's current power state."""
 
     power_state = None
-    cmd_to_exec = driver_info['cmd_set']['list_running']
-    running_list = _exec_ssh_command(ssh_obj, cmd_to_exec)
+    cmd_to_exec = "%s %s" % (driver_info['cmd_set']['base_cmd'],
+                             driver_info['cmd_set']['list_running'])
+    running_list = _exec_ssh_command(ssh_obj, cmd_to_exec)[0].split('\n')
     # Command should return a list of running vms. If the current node is
     # not listed then we can assume it is not powered on.
     node_name = _get_hosts_name_for_node(ssh_obj, driver_info)
     if node_name:
         for node in running_list:
+            if not node:
+                continue
             if node_name in node:
                 power_state = states.POWER_ON
                 break
@@ -184,17 +189,29 @@ def _get_hosts_name_for_node(ssh_obj, driver_info):
     """Get the name the host uses to reference the node."""
 
     matched_name = None
-    cmd_to_exec = driver_info['cmd_set']['list_all']
-    full_node_list = _exec_ssh_command(ssh_obj, cmd_to_exec)
+    cmd_to_exec = "%s %s" % (driver_info['cmd_set']['base_cmd'],
+                             driver_info['cmd_set']['list_all'])
+    full_node_list = _exec_ssh_command(ssh_obj, cmd_to_exec)[0].split('\n')
+    LOG.debug(_("Retrieved Node List: %s") % repr(full_node_list))
     # for each node check Mac Addresses
     for node in full_node_list:
-        cmd_to_exec = driver_info['cmd_set']['get_node_macs']
+        if not node:
+            continue
+        LOG.debug(_("Checking Node: %s's Mac address.") % node)
+        cmd_to_exec = "%s %s" % (driver_info['cmd_set']['base_cmd'],
+                                 driver_info['cmd_set']['get_node_macs'])
         cmd_to_exec = cmd_to_exec.replace('{_NodeName_}', node)
-        hosts_node_mac_list = _exec_ssh_command(ssh_obj, cmd_to_exec)
+        hosts_node_mac_list = _exec_ssh_command(ssh_obj,
+                                                cmd_to_exec)[0].split('\n')
 
         for host_mac in hosts_node_mac_list:
+            if not host_mac:
+                continue
             for node_mac in driver_info['macs']:
+                if not node_mac:
+                    continue
                 if _normalize_mac(host_mac) in _normalize_mac(node_mac):
+                    LOG.debug(_("Found Mac address: %s") % node_mac)
                     matched_name = node
                     break
 
@@ -214,7 +231,8 @@ def _power_on(ssh_obj, driver_info):
         _power_off(ssh_obj, driver_info)
 
     node_name = _get_hosts_name_for_node(ssh_obj, driver_info)
-    cmd_to_power_on = driver_info['cmd_set']['start_cmd']
+    cmd_to_power_on = "%s %s" % (driver_info['cmd_set']['base_cmd'],
+                                 driver_info['cmd_set']['start_cmd'])
     cmd_to_power_on = cmd_to_power_on.replace('{_NodeName_}', node_name)
 
     _exec_ssh_command(ssh_obj, cmd_to_power_on)
@@ -234,7 +252,8 @@ def _power_off(ssh_obj, driver_info):
         return current_pstate
 
     node_name = _get_hosts_name_for_node(ssh_obj, driver_info)
-    cmd_to_power_off = driver_info['cmd_set']['stop_cmd']
+    cmd_to_power_off = "%s %s" % (driver_info['cmd_set']['base_cmd'],
+                                  driver_info['cmd_set']['stop_cmd'])
     cmd_to_power_off = cmd_to_power_off.replace('{_NodeName_}', node_name)
 
     _exec_ssh_command(ssh_obj, cmd_to_power_off)

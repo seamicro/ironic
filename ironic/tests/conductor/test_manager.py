@@ -18,7 +18,8 @@
 #    under the License.
 
 """Test class for Ironic ManagerService."""
-import mox
+
+import mock
 
 from ironic.common import exception
 from ironic.common import states
@@ -54,20 +55,17 @@ class ManagerTestCase(base.DbTestCase):
         n = utils.get_test_node(driver='fake')
         self.dbapi.create_node(n)
 
-        self.mox.StubOutWithMock(self.driver.power, 'get_power_state')
+        with mock.patch.object(self.driver.power, 'get_power_state') \
+                as get_power_mock:
+            get_power_mock.side_effect = [states.POWER_OFF, states.POWER_ON]
+            expected = [mock.call(mock.ANY, mock.ANY),
+                        mock.call(mock.ANY, mock.ANY)]
 
-        self.driver.power.get_power_state(mox.IgnoreArg(), mox.IgnoreArg()).\
-                AndReturn(states.POWER_OFF)
-        self.driver.power.get_power_state(mox.IgnoreArg(), mox.IgnoreArg()).\
-                AndReturn(states.POWER_ON)
-        self.mox.ReplayAll()
-
-        state = self.service.get_node_power_state(self.context, n['uuid'])
-        self.assertEqual(state, states.POWER_OFF)
-        state = self.service.get_node_power_state(self.context, n['uuid'])
-        self.assertEqual(state, states.POWER_ON)
-
-        self.mox.VerifyAll()
+            state = self.service.get_node_power_state(self.context, n['uuid'])
+            self.assertEqual(state, states.POWER_OFF)
+            state = self.service.get_node_power_state(self.context, n['uuid'])
+            self.assertEqual(state, states.POWER_ON)
+            self.assertEqual(get_power_mock.call_args_list, expected)
 
     def test_update_node(self):
         ndict = utils.get_test_node(driver='fake', extra={'test': 'one'})
@@ -112,6 +110,23 @@ class ManagerTestCase(base.DbTestCase):
         res = objects.Node.get_by_uuid(self.context, node['uuid'])
         self.assertEqual(res['instance_uuid'], None)
 
+    def test_update_node_valid_state(self):
+        ndict = utils.get_test_node(driver='fake',
+                                    instance_uuid=None,
+                                    power_state=states.NOSTATE)
+        node = self.dbapi.create_node(ndict)
+
+        with mock.patch('ironic.drivers.modules.fake.FakePower.'
+                        'get_power_state') as mock_get_power_state:
+
+            mock_get_power_state.return_value = states.POWER_OFF
+            node['instance_uuid'] = 'fake-uuid'
+            self.service.update_node(self.context, node)
+
+            # Check if the change was applied
+            res = objects.Node.get_by_uuid(self.context, node['uuid'])
+            self.assertEqual(res['instance_uuid'], 'fake-uuid')
+
     def test_update_node_invalid_driver(self):
         existing_driver = 'fake'
         wrong_driver = 'wrong-driver'
@@ -152,7 +167,7 @@ class ManagerTestCase(base.DbTestCase):
         # TODO(deva)
         pass
 
-    def test_start_power_state_change_power_on(self):
+    def test_change_node_power_state_power_on(self):
         """Test if start_power_state to turn node power on
         is successful or not.
         """
@@ -160,18 +175,18 @@ class ManagerTestCase(base.DbTestCase):
                                     power_state=states.POWER_OFF)
         node = self.dbapi.create_node(ndict)
 
-        self.mox.StubOutWithMock(self.driver.power, 'get_power_state')
-        self.driver.power.get_power_state(mox.IgnoreArg(), node).\
-                AndReturn(states.POWER_OFF)
-        self.mox.ReplayAll()
+        with mock.patch.object(self.driver.power, 'get_power_state') \
+                as get_power_mock:
+            get_power_mock.return_value = states.POWER_OFF
 
-        self.service.start_power_state_change(self.context,
-                                              node, states.POWER_ON)
-        self.mox.VerifyAll()
-        self.assertEqual(node['power_state'], states.POWER_ON)
-        self.assertEqual(node['target_power_state'], None)
+            self.service.change_node_power_state(self.context,
+                                                 node, states.POWER_ON)
 
-    def test_start_power_state_change_power_off(self):
+            get_power_mock.assert_called_once_with(mock.ANY, node)
+            self.assertEqual(node['power_state'], states.POWER_ON)
+            self.assertEqual(node['target_power_state'], None)
+
+    def test_change_node_power_state_power_off(self):
         """Test if start_power_state to turn node power off
         is successful or not.
         """
@@ -179,18 +194,18 @@ class ManagerTestCase(base.DbTestCase):
                                     power_state=states.POWER_ON)
         node = self.dbapi.create_node(ndict)
 
-        self.mox.StubOutWithMock(self.driver.power, 'get_power_state')
-        self.driver.power.get_power_state(mox.IgnoreArg(), node).\
-                AndReturn(states.POWER_ON)
-        self.mox.ReplayAll()
+        with mock.patch.object(self.driver.power, 'get_power_state') \
+                as get_power_mock:
+            get_power_mock.return_value = states.POWER_ON
 
-        self.service.start_power_state_change(self.context, node,
-                                              states.POWER_OFF)
-        self.mox.VerifyAll()
-        self.assertEqual(node['power_state'], states.POWER_OFF)
-        self.assertEqual(node['target_power_state'], None)
+            self.service.change_node_power_state(self.context, node,
+                                                 states.POWER_OFF)
 
-    def test_start_power_state_change_already_locked(self):
+            get_power_mock.assert_called_once_with(mock.ANY, node)
+            self.assertEqual(node['power_state'], states.POWER_OFF)
+            self.assertEqual(node['target_power_state'], None)
+
+    def test_change_node_power_state_already_locked(self):
         """Test if an exception is thrown when applying an exclusive
         lock to the node failed.
         """
@@ -201,12 +216,12 @@ class ManagerTestCase(base.DbTestCase):
         # check if the node is locked
         with task_manager.acquire(node['id'], shared=False):
             self.assertRaises(exception.NodeLocked,
-                              self.service.start_power_state_change,
+                              self.service.change_node_power_state,
                               self.context,
                               node,
                               states.POWER_ON)
 
-    def test_start_power_state_change_invalid_state(self):
+    def test_change_node_power_state_invalid_state(self):
         """Test if an NodeInWrongPowerState exception is thrown
         when the node is in an invalid state to perform current operation.
         """
@@ -214,20 +229,18 @@ class ManagerTestCase(base.DbTestCase):
                                     power_state=states.POWER_ON)
         node = self.dbapi.create_node(ndict)
 
-        self.mox.StubOutWithMock(self.driver.power, 'get_power_state')
-        self.driver.power.get_power_state(mox.IgnoreArg(), node).\
-                AndReturn(states.POWER_ON)
-        self.mox.ReplayAll()
+        with mock.patch.object(self.driver.power, 'get_power_state') \
+                as get_power_mock:
+            get_power_mock.return_value = states.POWER_ON
 
-        self.assertRaises(exception.NodeInWrongPowerState,
-                          self.service.start_power_state_change,
-                          self.context,
-                          node,
-                          states.POWER_ON)
+            self.assertRaises(exception.NodeInWrongPowerState,
+                              self.service.change_node_power_state,
+                              self.context,
+                              node,
+                              states.POWER_ON)
+            get_power_mock.assert_called_once_with(mock.ANY, node)
 
-        self.mox.VerifyAll()
-
-    def test_start_power_state_change_invalid_driver_info(self):
+    def test_change_node_power_state_invalid_driver_info(self):
         """Test if an exception is thrown when the driver validation is
         failed.
         """
@@ -235,41 +248,193 @@ class ManagerTestCase(base.DbTestCase):
                                     power_state=states.POWER_ON)
         node = self.dbapi.create_node(ndict)
 
-        self.mox.StubOutWithMock(self.driver.power, 'validate')
-        self.driver.power.validate(node).\
-                AndRaise(exception.InvalidParameterValue(
-                'wrong power driver info'))
-        self.mox.ReplayAll()
+        with mock.patch.object(self.driver.power, 'validate') \
+                as validate_mock:
+            validate_mock.side_effect = exception.InvalidParameterValue(
+                    'wrong power driver info')
 
-        self.assertRaises(exception.InvalidParameterValue,
-                          self.service.start_power_state_change,
-                          self.context,
-                          node,
-                          states.POWER_ON)
+            self.assertRaises(exception.InvalidParameterValue,
+                              self.service.change_node_power_state,
+                              self.context,
+                              node,
+                              states.POWER_ON)
+            validate_mock.assert_called_once_with(node)
 
-        self.mox.VerifyAll()
-
-    def test_start_power_state_change_set_power_failure(self):
+    def test_change_node_power_state_set_power_failure(self):
         """Test if an exception is thrown when the set_power call is
         failed.
         """
+        class TestException(Exception):
+            pass
+
         ndict = utils.get_test_node(driver='fake',
                                     power_state=states.POWER_OFF)
         node = self.dbapi.create_node(ndict)
 
-        self.mox.StubOutWithMock(self.driver.power, 'get_power_state')
-        self.mox.StubOutWithMock(self.driver.power, 'set_power_state')
-        self.driver.power.get_power_state(mox.IgnoreArg(), node).\
-            AndReturn(states.POWER_OFF)
-        self.driver.power.set_power_state(mox.IgnoreArg(), node,
-                                          states.POWER_ON).\
-                AndRaise(Exception('error returned from the power driver.'))
-        self.mox.ReplayAll()
+        with mock.patch.object(self.driver.power, 'get_power_state') \
+                as get_power_mock:
+            with mock.patch.object(self.driver.power, 'set_power_state') \
+                    as set_power_mock:
+                get_power_mock.return_value = states.POWER_OFF
+                set_power_mock.side_effect = TestException()
 
-        self.assertRaises(Exception,
-                          self.service.start_power_state_change,
-                          self.context,
-                          node,
-                          states.POWER_ON)
+                self.assertRaises(TestException,
+                                  self.service.change_node_power_state,
+                                  self.context,
+                                  node,
+                                  states.POWER_ON)
+                get_power_mock.assert_called_once_with(mock.ANY, node)
+                set_power_mock.assert_called_once_with(mock.ANY, node,
+                                                       states.POWER_ON)
 
-        self.mox.VerifyAll()
+    def test_vendor_action(self):
+        n = utils.get_test_node(driver='fake')
+        self.dbapi.create_node(n)
+        info = {'bar': 'baz'}
+        self.service.do_vendor_action(self.context, n['uuid'], 'foo', info)
+
+    def test_validate_vendor_action(self):
+        n = utils.get_test_node(driver='fake')
+        self.dbapi.create_node(n)
+        info = {'bar': 'baz'}
+        self.assertTrue(self.service.validate_vendor_action(self.context,
+                                                     n['uuid'], 'foo', info))
+
+    def test_validate_vendor_action_unsupported_method(self):
+        n = utils.get_test_node(driver='fake')
+        self.dbapi.create_node(n)
+        info = {'bar': 'baz'}
+        self.assertRaises(exception.InvalidParameterValue,
+                          self.service.validate_vendor_action,
+                          self.context, n['uuid'], 'abc', info)
+
+    def test_validate_vendor_action_no_parameter(self):
+        n = utils.get_test_node(driver='fake')
+        self.dbapi.create_node(n)
+        info = {'fake': 'baz'}
+        self.assertRaises(exception.InvalidParameterValue,
+                          self.service.validate_vendor_action,
+                          self.context, n['uuid'], 'foo', info)
+
+    def test_validate_vendor_action_unsupported(self):
+        n = utils.get_test_node(driver='fake')
+        self.dbapi.create_node(n)
+        info = {'bar': 'baz'}
+        self.driver.vendor = None
+        self.assertRaises(exception.UnsupportedDriverExtension,
+                          self.service.validate_vendor_action,
+                          self.context, n['uuid'], 'foo', info)
+
+    def test_do_node_deploy_invalid_state(self):
+        # test node['provision_state'] is not NOSTATE
+        ndict = utils.get_test_node(driver='fake',
+                                    provision_state=states.ACTIVE)
+        node = self.dbapi.create_node(ndict)
+        self.assertRaises(exception.InstanceDeployFailure,
+                          self.service.do_node_deploy,
+                          self.context, node)
+
+    def test_do_node_deploy_driver_raises_error(self):
+        # test when driver.deploy.deploy raises an exception
+        ndict = utils.get_test_node(driver='fake',
+                                    provision_state=states.NOSTATE)
+        node = self.dbapi.create_node(ndict)
+
+        with mock.patch('ironic.drivers.modules.fake.FakeDeploy.deploy') \
+                as deploy:
+            deploy.side_effect = exception.InstanceDeployFailure('test')
+            self.assertRaises(exception.InstanceDeployFailure,
+                              self.service.do_node_deploy,
+                              self.context, node)
+            self.assertEqual(node['provision_state'],
+                             states.ERROR)
+            deploy.assert_called_once()
+
+    def test_do_node_deploy_ok(self):
+        # test when driver.deploy.deploy returns DEPLOYDONE
+        ndict = utils.get_test_node(driver='fake',
+                                    provision_state=states.NOSTATE)
+        node = self.dbapi.create_node(ndict)
+
+        with mock.patch('ironic.drivers.modules.fake.FakeDeploy.deploy') \
+                as deploy:
+            deploy.return_value = states.DEPLOYDONE
+            self.service.do_node_deploy(self.context, node)
+            self.assertEqual(node['provision_state'],
+                             states.ACTIVE)
+            self.assertEqual(node['target_provision_state'],
+                             states.NOSTATE)
+            deploy.assert_called_once()
+
+    def test_do_node_deploy_partial_ok(self):
+        # test when driver.deploy.deploy doesn't return DEPLOYDONE
+        ndict = utils.get_test_node(driver='fake',
+                                    provision_state=states.NOSTATE)
+        node = self.dbapi.create_node(ndict)
+
+        with mock.patch('ironic.drivers.modules.fake.FakeDeploy.deploy') \
+                as deploy:
+            deploy.return_value = states.DEPLOYING
+            self.service.do_node_deploy(self.context, node)
+            self.assertEqual(node['provision_state'],
+                             states.DEPLOYING)
+            self.assertEqual(node['target_provision_state'],
+                             states.DEPLOYDONE)
+            deploy.assert_called_once()
+
+    def test_do_node_tear_down_invalid_state(self):
+        # test node['provision_state'] is incorrect for tear_down
+        ndict = utils.get_test_node(driver='fake',
+                                    provision_state=states.NOSTATE)
+        node = self.dbapi.create_node(ndict)
+        self.assertRaises(exception.InstanceDeployFailure,
+                          self.service.do_node_tear_down,
+                          self.context, node)
+
+    def test_do_node_tear_down_driver_raises_error(self):
+        # test when driver.deploy.tear_down raises exception
+        ndict = utils.get_test_node(driver='fake',
+                                    provision_state=states.ACTIVE)
+        node = self.dbapi.create_node(ndict)
+
+        with mock.patch('ironic.drivers.modules.fake.FakeDeploy.tear_down') \
+                as deploy:
+            deploy.side_effect = exception.InstanceDeployFailure('test')
+            self.assertRaises(exception.InstanceDeployFailure,
+                              self.service.do_node_tear_down,
+                              self.context, node)
+            self.assertEqual(node['provision_state'],
+                             states.ERROR)
+            deploy.assert_called_once()
+
+    def test_do_node_tear_down_ok(self):
+        # test when driver.deploy.tear_down returns DELETED
+        ndict = utils.get_test_node(driver='fake',
+                                    provision_state=states.ACTIVE)
+        node = self.dbapi.create_node(ndict)
+
+        with mock.patch('ironic.drivers.modules.fake.FakeDeploy.tear_down') \
+                as deploy:
+            deploy.return_value = states.DELETED
+            self.service.do_node_tear_down(self.context, node)
+            self.assertEqual(node['provision_state'],
+                             states.NOSTATE)
+            self.assertEqual(node['target_provision_state'],
+                             states.NOSTATE)
+            deploy.assert_called_once()
+
+    def test_do_node_tear_down_partial_ok(self):
+        # test when driver.deploy.tear_down doesn't return DELETED
+        ndict = utils.get_test_node(driver='fake',
+                                    provision_state=states.ACTIVE)
+        node = self.dbapi.create_node(ndict)
+
+        with mock.patch('ironic.drivers.modules.fake.FakeDeploy.tear_down') \
+                as deploy:
+            deploy.return_value = states.DELETING
+            self.service.do_node_tear_down(self.context, node)
+            self.assertEqual(node['provision_state'],
+                             states.DELETING)
+            self.assertEqual(node['target_provision_state'],
+                             states.DELETED)
+            deploy.assert_called_once()

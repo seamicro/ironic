@@ -28,8 +28,9 @@ import wsmeext.pecan as wsme_pecan
 from ironic.api.controllers.v1 import base
 from ironic.api.controllers.v1 import collection
 from ironic.api.controllers.v1 import link
-from ironic.api.controllers.v1 import utils
+from ironic.api.controllers.v1 import utils as api_utils
 from ironic.common import exception
+from ironic.common import utils
 from ironic import objects
 from ironic.openstack.common import log
 
@@ -48,9 +49,9 @@ class Port(base.APIBase):
 
     address = wtypes.text
 
-    extra = {wtypes.text: utils.ValidTypes(wtypes.text, six.integer_types)}
+    extra = {wtypes.text: api_utils.ValidTypes(wtypes.text, six.integer_types)}
 
-    node_id = int
+    node_id = api_utils.ValidTypes(wtypes.text, six.integer_types)
 
     links = [link.Link]
     "A list containing a self link and associated port links"
@@ -64,6 +65,13 @@ class Port(base.APIBase):
     def convert_with_links(cls, rpc_port, expand=True):
         fields = ['uuid', 'address'] if not expand else None
         port = Port.from_rpc_object(rpc_port, fields)
+
+        # translate id -> uuid
+        if port.node_id and isinstance(port.node_id, six.integer_types):
+            node_obj = objects.Node.get_by_uuid(pecan.request.context,
+                                                port.node_id)
+            port.node_id = node_obj.uuid
+
         port.links = [link.Link.make_link('self', pecan.request.host_url,
                                           'ports', port.uuid),
                       link.Link.make_link('bookmark',
@@ -107,8 +115,8 @@ class PortsController(rest.RestController):
             raise exception.InvalidParameterValue(_(
                   "Node id not specified."))
 
-        limit = utils.validate_limit(limit)
-        sort_dir = utils.validate_sort_dir(sort_dir)
+        limit = api_utils.validate_limit(limit)
+        sort_dir = api_utils.validate_sort_dir(sort_dir)
 
         marker_obj = None
         if marker:
@@ -125,6 +133,29 @@ class PortsController(rest.RestController):
                                                       sort_key=sort_key,
                                                       sort_dir=sort_dir)
         return ports
+
+    def _convert_node_uuid_to_id(self, port_dict):
+        # NOTE(lucasagomes): translate uuid -> id, used internally to
+        #                    tune performance
+        try:
+            node_obj = objects.Node.get_by_uuid(pecan.request.context,
+                                                port_dict['node_id'])
+            port_dict['node_id'] = node_obj.id
+        except exception.NodeNotFound as e:
+            e.code = 400  # BadRequest
+            raise e
+
+    def _check_address(self, port_dict):
+        if not utils.is_valid_mac(port_dict['address']):
+            raise wsme.exc.ClientSideError(_("Invalid MAC address format: %s")
+                                           % port_dict['address'])
+
+        try:
+            if pecan.request.dbapi.get_port(port_dict['address']):
+                raise wsme.exc.ClientSideError(_("MAC address already "
+                                                 "exists."))
+        except exception.PortNotFound:
+            pass
 
     @wsme_pecan.wsexpose(PortCollection, unicode, unicode, int,
                          unicode, unicode)
@@ -169,8 +200,20 @@ class PortsController(rest.RestController):
         if self._from_nodes:
             raise exception.OperationNotPermitted
 
+        port_dict = port.as_dict()
+
+        # Required fields
+        missing_attr = [attr for attr in ['address', 'node_id']
+                        if not port_dict[attr]]
+        if missing_attr:
+            msg = _("Missing %s attribute(s)")
+            raise wsme.exc.ClientSideError(msg % ', '.join(missing_attr))
+
+        self._check_address(port_dict)
+        self._convert_node_uuid_to_id(port_dict)
+
         try:
-            new_port = pecan.request.dbapi.create_port(port.as_dict())
+            new_port = pecan.request.dbapi.create_port(port_dict)
         except exception.IronicException as e:
             LOG.exception(e)
             raise wsme.exc.ClientSideError(_("Invalid data"))
@@ -185,13 +228,25 @@ class PortsController(rest.RestController):
         port = objects.Port.get_by_uuid(pecan.request.context, uuid)
         port_dict = port.as_dict()
 
-        utils.validate_patch(patch)
+        api_utils.validate_patch(patch)
         try:
             patched_port = jsonpatch.apply_patch(port_dict,
                                                  jsonpatch.JsonPatch(patch))
         except jsonpatch.JsonPatchException as e:
             LOG.exception(e)
             raise wsme.exc.ClientSideError(_("Patching Error: %s") % e)
+
+        # Required fields
+        missing_attr = [attr for attr in ['address', 'node_id']
+                        if attr not in patched_port]
+        if missing_attr:
+            msg = _("Attribute(s): %s can not be removed")
+            raise wsme.exc.ClientSideError(msg % ', '.join(missing_attr))
+
+        if port_dict['address'] != patched_port['address']:
+            self._check_address(patched_port)
+
+        self._convert_node_uuid_to_id(patched_port)
 
         defaults = objects.Port.get_defaults()
         for key in defaults:

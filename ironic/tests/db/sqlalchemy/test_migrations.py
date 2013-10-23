@@ -55,7 +55,7 @@ from ironic.openstack.common import lockutils
 from ironic.openstack.common import log as logging
 
 import ironic.db.sqlalchemy.migrate_repo
-from ironic.tests import utils as test_utils
+from ironic.tests import base
 
 LOG = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ def get_db_connection_info(conn_pieces):
     return (user, password, database, host)
 
 
-class BaseMigrationTestCase(test_utils.BaseTestCase):
+class BaseMigrationTestCase(base.TestCase):
     """Base class fort testing of migration utils."""
 
     def __init__(self, *args, **kwargs):
@@ -163,12 +163,8 @@ class BaseMigrationTestCase(test_utils.BaseTestCase):
         # We start each test case with a completely blank slate.
         self._reset_databases()
 
-    def tearDown(self):
-        # We destroy the test data store between each test case,
-        # and recreate it, which ensures that we have no side-effects
-        # from the tests
-        self._reset_databases()
-        super(BaseMigrationTestCase, self).tearDown()
+        # We also want to clean up, eg. in case of a failing test
+        self.addCleanup(self._reset_databases)
 
     def execute_cmd(self, cmd=None):
         status, output = commands.getstatusoutput(cmd)
@@ -318,7 +314,7 @@ class WalkVersionsMixin(object):
             raise
 
 
-class TestWalkVersions(test_utils.BaseTestCase, WalkVersionsMixin):
+class TestWalkVersions(base.TestCase, WalkVersionsMixin):
     def setUp(self):
         super(TestWalkVersions, self).setUp()
         self.migration_api = mock.MagicMock()
@@ -480,7 +476,7 @@ class TestMigrations(BaseMigrationTestCase, WalkVersionsMixin):
         if not _have_mysql(self.USER, self.PASSWD, self.DATABASE):
             self.skipTest("mysql not available")
         # add this to the global lists to make reset work with it, it's removed
-        # automatically in tearDown so no need to clean it up here.
+        # automatically during Cleanup so no need to clean it up here.
         connect_string = _get_connect_string("mysql", self.USER, self.PASSWD,
                 self.DATABASE)
         (user, password, database, host) = \
@@ -515,7 +511,7 @@ class TestMigrations(BaseMigrationTestCase, WalkVersionsMixin):
         if not _have_postgresql(self.USER, self.PASSWD, self.DATABASE):
             self.skipTest("postgresql not available")
         # add this to the global lists to make reset work with it, it's removed
-        # automatically in tearDown so no need to clean it up here.
+        # automatically during Cleanup so no need to clean it up here.
         connect_string = _get_connect_string("postgres", self.USER,
                 self.PASSWD, self.DATABASE)
         engine = sqlalchemy.create_engine(connect_string)

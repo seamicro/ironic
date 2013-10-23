@@ -33,6 +33,7 @@ from ironic.api.controllers.v1 import state
 from ironic.api.controllers.v1 import utils
 from ironic.common import exception
 from ironic import objects
+from ironic.openstack.common import excutils
 from ironic.openstack.common import log
 
 LOG = log.getLogger(__name__)
@@ -74,7 +75,7 @@ class NodePowerStateController(rest.RestController):
         return NodePowerState.convert_with_links(node)
 
     # PUT nodes/<uuid>/state/power
-    @wsme_pecan.wsexpose(NodePowerState, unicode, unicode, status=202)
+    @wsme_pecan.wsexpose(NodePowerState, unicode, unicode, status_code=202)
     def put(self, node_id, target):
         """Set the power state of the machine."""
         node = objects.Node.get_by_uuid(pecan.request.context, node_id)
@@ -87,7 +88,7 @@ class NodePowerStateController(rest.RestController):
         node['target_power_state'] = target
         updated_node = pecan.request.rpcapi.update_node(pecan.request.context,
                                                         node)
-        pecan.request.rpcapi.start_power_state_change(pecan.request.context,
+        pecan.request.rpcapi.change_node_power_state(pecan.request.context,
                                                       updated_node, target)
         return NodePowerState.convert_with_links(updated_node, expand=False)
 
@@ -123,7 +124,7 @@ class NodeProvisionStateController(rest.RestController):
         return provision_state
 
     # PUT nodes/<uuid>/state/provision
-    @wsme_pecan.wsexpose(NodeProvisionState, unicode, unicode, status=202)
+    @wsme_pecan.wsexpose(NodeProvisionState, unicode, unicode, status_code=202)
     def put(self, node_id, target):
         """Set the provision state of the machine."""
         #TODO(lucasagomes): Test if target is a valid state and if it's able
@@ -208,7 +209,7 @@ class Node(base.APIBase):
 
     # NOTE: translate 'chassis_id' to a link to the chassis resource
     #       and accept a chassis uuid when creating a node.
-    chassis_id = int
+    chassis_id = utils.ValidTypes(wtypes.text, six.integer_types)
 
     links = [link.Link]
     "A list containing a self link and associated node links"
@@ -228,6 +229,13 @@ class Node(base.APIBase):
                           'instance_uuid']
         fields = minimum_fields if not expand else None
         node = Node.from_rpc_object(rpc_node, fields)
+
+        # translate id -> uuid
+        if node.chassis_id and isinstance(node.chassis_id, six.integer_types):
+            chassis_obj = objects.Chassis.get_by_uuid(pecan.request.context,
+                                                      node.chassis_id)
+            node.chassis_id = chassis_obj.uuid
+
         node.links = [link.Link.make_link('self', pecan.request.host_url,
                                           'nodes', node.uuid),
                       link.Link.make_link('bookmark',
@@ -272,7 +280,7 @@ class NodeVendorPassthruController(rest.RestController):
     appropriate driver, no introspection will be made in the message body.
     """
 
-    @wsme_pecan.wsexpose(None, unicode, unicode, body=unicode, status=202)
+    @wsme_pecan.wsexpose(None, unicode, unicode, body=unicode, status_code=202)
     def _default(self, node_id, method, data):
         # Only allow POST requests
         if pecan.request.method.upper() != "POST":
@@ -331,6 +339,14 @@ class NodesController(rest.RestController):
                                                       sort_dir=sort_dir)
         return nodes
 
+    def _convert_chassis_uuid_to_id(self, node_dict):
+        # NOTE(lucasagomes): translate uuid -> id, used internally to
+        #                    tune performance
+        if node_dict['chassis_id']:
+            chassis_obj = objects.Chassis.get_by_uuid(pecan.request.context,
+                                                      node_dict['chassis_id'])
+            node_dict['chassis_id'] = chassis_obj.id
+
     @wsme_pecan.wsexpose(NodeCollection, unicode, unicode, int,
                          unicode, unicode)
     def get_all(self, chassis_id=None, marker=None, limit=None,
@@ -374,8 +390,11 @@ class NodesController(rest.RestController):
         if self._from_chassis:
             raise exception.OperationNotPermitted
 
+        node_dict = node.as_dict()
+        self._convert_chassis_uuid_to_id(node_dict)
+
         try:
-            new_node = pecan.request.dbapi.create_node(node.as_dict())
+            new_node = pecan.request.dbapi.create_node(node_dict)
         except Exception as e:
             LOG.exception(e)
             raise wsme.exc.ClientSideError(_("Invalid data"))
@@ -385,7 +404,7 @@ class NodesController(rest.RestController):
     def patch(self, uuid, patch):
         """Update an existing node.
 
-        TODO(deva): add exception handling
+        TODO(yuriyz): improve exceptions handling
         """
         if self._from_chassis:
             raise exception.OperationNotPermitted
@@ -419,8 +438,8 @@ class NodesController(rest.RestController):
             LOG.exception(e)
             raise wsme.exc.ClientSideError(_("Patching Error: %s") % e)
 
-        response = wsme.api.Response(Node(), status_code=200)
         try:
+            self. _convert_chassis_uuid_to_id(patched_node)
             defaults = objects.Node.get_defaults()
             for key in defaults:
                 # Internal values that shouldn't be part of the patch
@@ -438,29 +457,16 @@ class NodesController(rest.RestController):
 
             node = pecan.request.rpcapi.update_node(pecan.request.context,
                                                     node)
-            response.obj = node
-        except exception.InvalidParameterValue:
-            response.status_code = 400
-        except exception.NodeInWrongPowerState:
-            response.status_code = 409
+
         except exception.IronicException as e:
-            LOG.exception(e)
-            response.status_code = 500
+            with excutils.save_and_reraise_exception():
+                LOG.exception(e)
 
-        # TODO(deva): return the response object instead of raising
-        #             after wsme 0.5b3 is released
-        if response.status_code not in [200, 202]:
-            raise wsme.exc.ClientSideError(_(
-                    "Error updating node %s") % uuid)
-
-        return Node.convert_with_links(response.obj)
+        return Node.convert_with_links(node)
 
     @wsme_pecan.wsexpose(None, unicode, status_code=204)
     def delete(self, node_id):
-        """Delete a node.
-
-        TODO(deva): don't allow deletion of an associated node.
-        """
+        """Delete a node."""
         if self._from_chassis:
             raise exception.OperationNotPermitted
 

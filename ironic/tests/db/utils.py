@@ -25,11 +25,9 @@ fake_info = {"foo": "bar"}
 
 ipmi_info = json.dumps(
         {
-            'ipmi': {
-                "address": "1.2.3.4",
-                "username": "admin",
-                "password": "fake",
-            }
+            "ipmi_address": "1.2.3.4",
+            "ipmi_username": "admin",
+            "ipmi_password": "fake",
          })
 
 seamicro_info = json.dumps(
@@ -44,25 +42,21 @@ seamicro_info = json.dumps(
 
 ssh_info = json.dumps(
         {
-            'ssh': {
-                "address": "1.2.3.4",
-                "username": "admin",
-                "password": "fake",
-                "port": 22,
-                "virt_type": "vbox",
-                "key_filename": "/not/real/file",
-            }
+            "ssh_address": "1.2.3.4",
+            "ssh_username": "admin",
+            "ssh_password": "fake",
+            "ssh_port": 22,
+            "ssh_virt_type": "vbox",
+            "ssh_key_filename": "/not/real/file",
          })
 
 pxe_info = json.dumps(
         {
-            'pxe': {
-                "instance_name": "fake_instance_name",
-                "image_source": "glance://image_uuid",
-                "deploy_kernel": "glance://deploy_kernel_uuid",
-                "deploy_ramdisk": "glance://deploy_ramdisk_uuid",
-                "root_gb": 100,
-            }
+            "pxe_instance_name": "fake_instance_name",
+            "pxe_image_source": "glance://image_uuid",
+            "pxe_deploy_kernel": "glance://deploy_kernel_uuid",
+            "pxe_deploy_ramdisk": "glance://deploy_ramdisk_uuid",
+            "pxe_root_gb": 100,
         })
 
 pxe_ssh_info = json.dumps(
@@ -83,14 +77,13 @@ def get_test_node(**kw):
     node = {
             'id': kw.get('id', 123),
             'uuid': kw.get('uuid', '1be26c0b-03f2-4d2e-ae87-c02d7f33c123'),
-            'chassis_id': 42,
+            'chassis_id': kw.get('chassis_id', 42),
             'power_state': kw.get('power_state', states.NOSTATE),
             'target_power_state': kw.get('target_power_state', states.NOSTATE),
             'provision_state': kw.get('provision_state', states.NOSTATE),
             'target_provision_state': kw.get('target_provision_state',
                                              states.NOSTATE),
-            'instance_uuid': kw.get('instance_uuid',
-                                    '8227348d-5f1d-4488-aad1-7c92b2d42504'),
+            'instance_uuid': kw.get('instance_uuid', None),
             'driver': kw.get('driver', 'fake'),
             'driver_info': kw.get('driver_info', fake_info),
             'properties': kw.get('properties', properties),
@@ -106,7 +99,7 @@ def get_test_port(**kw):
     port = {
         'id': kw.get('id', 987),
         'uuid': kw.get('uuid', '1be26c0b-03f2-4d2e-ae87-c02d7f33c781'),
-        'node_id': kw.get('node_id'),
+        'node_id': kw.get('node_id', 123),
         'address': kw.get('address', '52:54:00:cf:2d:31'),
         'extra': kw.get('extra', {}),
         'created_at': kw.get('created_at'),

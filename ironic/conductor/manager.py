@@ -43,6 +43,7 @@ from ironic.common import states
 from ironic.conductor import task_manager
 from ironic.db import api as dbapi
 from ironic.objects import base as objects_base
+from ironic.openstack.common import excutils
 from ironic.openstack.common import log
 
 MANAGER_TOPIC = 'ironic.conductor_manager'
@@ -53,7 +54,7 @@ LOG = log.getLogger(__name__)
 class ConductorManager(service.PeriodicService):
     """Ironic Conductor service main class."""
 
-    RPC_API_VERSION = '1.1'
+    RPC_API_VERSION = '1.4'
 
     def __init__(self, host, topic):
         serializer = objects_base.IronicObjectSerializer()
@@ -94,9 +95,10 @@ class ConductorManager(service.PeriodicService):
 
         :param context: an admin context
         :param node_obj: a changed (but not saved) node object.
+
         """
         node_id = node_obj.get('uuid')
-        LOG.debug("RPC update_node called for node %s." % node_id)
+        LOG.debug(_("RPC update_node called for node %s.") % node_id)
 
         delta = node_obj.obj_what_changed()
         if 'power_state' in delta:
@@ -107,14 +109,14 @@ class ConductorManager(service.PeriodicService):
         with task_manager.acquire(node_id,
                                   shared=False,
                                   driver_name=driver_name) as task:
-            if 'driver_info' in delta:
-                task.driver.deploy.validate(node_obj)
-                task.driver.power.validate(node_obj)
-                node_obj['power_state'] = task.driver.power.get_power_state
 
             # TODO(deva): Determine what value will be passed by API when
             #             instance_uuid needs to be unset, and handle it.
             if 'instance_uuid' in delta:
+                task.driver.power.validate(node_obj)
+                node_obj['power_state'] = \
+                        task.driver.power.get_power_state(task, node_id)
+
                 if node_obj['power_state'] != states.POWER_OFF:
                     raise exception.NodeInWrongPowerState(
                             node=node_id,
@@ -125,7 +127,7 @@ class ConductorManager(service.PeriodicService):
 
             return node_obj
 
-    def start_power_state_change(self, context, node_obj, new_state):
+    def change_node_power_state(self, context, node_obj, new_state):
         """RPC method to encapsulate changes to a node's state.
 
         Perform actions such as power on, power off. It waits for the power
@@ -141,11 +143,12 @@ class ConductorManager(service.PeriodicService):
                   that cannot perform and requested power action.
         :raises: other exceptins by the node's power driver if something
                   wrong during the power action.
-        :
+
         """
         node_id = node_obj.get('uuid')
-        LOG.debug("RPC start_power_state_change called for node %s."
-            " The desired new state is %s." % (node_id, new_state))
+        LOG.debug(_("RPC change_node_power_state called for node %(node)s. "
+                    "The desired new state is %(state)s.")
+                    % {'node': node_id, 'state': new_state})
 
         with task_manager.acquire(node_id, shared=False) as task:
             # an exception will be raised if validate fails.
@@ -172,4 +175,117 @@ class ConductorManager(service.PeriodicService):
             # update the node power states
             node_obj['power_state'] = new_state
             node_obj['target_power_state'] = states.NOSTATE
+            node_obj.save(context)
+
+    # NOTE(deva): There is a race condition in the RPC API for vendor_passthru.
+    # Between the validate_vendor_action and do_vendor_action calls, it's
+    # possible another conductor instance may acquire a lock, or change the
+    # state of the node, such that validate() succeeds but do() fails.
+    # TODO(deva): Implement an intent lock to prevent this race. Do this after
+    # we have implemented intelligent RPC routing so that the do() will be
+    # guaranteed to land on the same conductor instance that performed
+    # validate().
+    def validate_vendor_action(self, context, node_id, driver_method, info):
+        """Validate driver specific info or get driver status."""
+
+        LOG.debug(_("RPC call_driver called for node %s.") % node_id)
+        with task_manager.acquire(node_id, shared=True) as task:
+            if getattr(task.driver, 'vendor', None):
+                return task.driver.vendor.validate(task.node,
+                                                   method=driver_method,
+                                                   **info)
+            else:
+                raise exception.UnsupportedDriverExtension(
+                                        driver=task.node['driver'],
+                                        node=node_id,
+                                        extension='vendor passthru')
+
+    def do_vendor_action(self, context, node_id, driver_method, info):
+        """Run driver action asynchronously."""
+
+        with task_manager.acquire(node_id, shared=True) as task:
+                task.driver.vendor.vendor_passthru(task, task.node,
+                                                  method=driver_method, **info)
+
+    def do_node_deploy(self, context, node_obj):
+        """RPC method to initiate deployment to a node.
+
+        :param context: an admin context.
+        :param node_obj: an RPC-style node object.
+        :raises: InstanceDeployFailure
+
+        """
+        node_id = node_obj.get('uuid')
+        LOG.debug(_("RPC do_node_deploy called for node %s.") % node_id)
+
+        with task_manager.acquire(node_id, shared=False) as task:
+            task.driver.deploy.validate(node_obj)
+            if node_obj['provision_state'] is not states.NOSTATE:
+                raise exception.InstanceDeployFailure(_(
+                    "RPC do_node_deploy called for %(node)s, but provision "
+                    "state is already %(state)s.") %
+                    {'node': node_id, 'state': node_obj['provision_state']})
+
+            # set target state to expose that work is in progress
+            node_obj['provision_state'] = states.DEPLOYING
+            node_obj['target_provision_state'] = states.DEPLOYDONE
+            node_obj.save(context)
+
+            try:
+                new_state = task.driver.deploy.deploy(task, node_obj)
+            except exception.IronicException:
+                with excutils.save_and_reraise_exception():
+                    node_obj['provision_state'] = states.ERROR
+                    node_obj.save(context)
+
+            # NOTE(deva): Some drivers may return states.DEPLOYING
+            #             eg. if they are waiting for a callback
+            if new_state == states.DEPLOYDONE:
+                node_obj['target_provision_state'] = states.NOSTATE
+                node_obj['provision_state'] = states.ACTIVE
+            else:
+                node_obj['provision_state'] = new_state
+            node_obj.save(context)
+
+    def do_node_tear_down(self, context, node_obj):
+        """RPC method to tear down an existing node deployment.
+
+        :param context: an admin context.
+        :param node_obj: an RPC-style node object.
+        :raises: InstanceDeployFailure
+
+        """
+        node_id = node_obj.get('uuid')
+        LOG.debug(_("RPC do_node_tear_down called for node %s.") % node_id)
+
+        with task_manager.acquire(node_id, shared=False) as task:
+            task.driver.deploy.validate(node_obj)
+
+            if node_obj['provision_state'] not in [states.ACTIVE,
+                                                   states.DEPLOYFAIL,
+                                                   states.ERROR]:
+                raise exception.InstanceDeployFailure(_(
+                    "RCP do_node_tear_down "
+                    "not allowed for node %(node)s in state %(state)s")
+                    % {'node': node_id, 'state': node_obj['provision_state']})
+
+            # set target state to expose that work is in progress
+            node_obj['provision_state'] = states.DELETING
+            node_obj['target_provision_state'] = states.DELETED
+            node_obj.save(context)
+
+            try:
+                new_state = task.driver.deploy.tear_down(task, node_obj)
+            except exception.IronicException:
+                with excutils.save_and_reraise_exception():
+                    node_obj['provision_state'] = states.ERROR
+                    node_obj.save(context)
+
+            # NOTE(deva): Some drivers may return states.DELETING
+            #             eg. if they are waiting for a callback
+            if new_state == states.DELETED:
+                node_obj['target_provision_state'] = states.NOSTATE
+                node_obj['provision_state'] = states.NOSTATE
+            else:
+                node_obj['provision_state'] = new_state
             node_obj.save(context)

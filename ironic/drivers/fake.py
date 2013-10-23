@@ -59,6 +59,7 @@ class FakePXEDriver(base.BaseDriver):
         self.power = fake.FakePower()
         self.deploy = pxe.PXEDeploy()
         self.rescue = self.deploy
+        self.vendor = pxe.VendorPassthru()
 
 
 class FakeSSHDriver(base.BaseDriver):
