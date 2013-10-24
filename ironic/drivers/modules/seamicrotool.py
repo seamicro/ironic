@@ -78,9 +78,15 @@ def _make_password_file(password):
 
 
 def _parse_driver_info(node):
-    driver_info = json.loads(node.get('driver_info', ''))
-    seamicro_info = driver_info.get('seamicro')
+    LOG.debug("driver_info = %s" % (node.get('driver_info', '')))
+    #driver_info = json.loads(node.get('driver_info', ''))
+    driver_info = node.get('driver_info', '')
+    LOG.debug("driver_info = %s" % (driver_info))
+    #seamicro_info = driver_info.get('seamicro')
+    seamicro_info = driver_info
+    LOG.debug("seamicro_info = %s" % (seamicro_info))
     address = seamicro_info.get('address', None)
+    LOG.debug("address = %s" % (address))
     username = seamicro_info.get('username', None)
     password = seamicro_info.get('password', None)
     ccard = seamicro_info.get('ccard', None)
@@ -190,7 +196,7 @@ def _power_off(driver_info):
         try:
             retries[0] += 1
 			# Try for 3 times. Either this call or Vince's REST Api call
-            _exec_seamicrotool(driver_info, "enable;power-off server " + driver_info['ccard'] + " no-confirm")
+            _exec_seamicrotool(driver_info, "enable;power-off server " + driver_info['ccard'] + " force no-confirm")
         except Exception:
             # Log failures but keep trying
             LOG.warning(_("Seamicro Power off failed for node %s.")
@@ -203,11 +209,15 @@ def _power_off(driver_info):
 
 
 def _power_status(driver_info):
-    out_err = _exec_seamicrotool(driver_info, "enable;show server summary " + driver_info['ccard'])
-	# TODO(vikhub): parse the list and decide the status. Or use REST plugin from Vince
-    if out_err[1] == "up":
+
+    commandOutput,returnCode = _exec_seamicrotool(driver_info, "enable;show server summary " + driver_info['ccard'] + " | include " + driver_info['ccard'])
+    # TODO(vikhub): parse the list and decide the status. Or use REST plugin from Vince
+    
+    status = commandOutput.split()
+    LOG.debug(status)
+    if status[4] == "up":
         return states.POWER_ON
-    elif out_err[1] == "down":
+    elif status[4] == "down":
         return states.POWER_OFF
     else:
         return states.ERROR

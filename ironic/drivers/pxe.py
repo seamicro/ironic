@@ -23,7 +23,7 @@ from ironic.drivers.modules import ipminative
 from ironic.drivers.modules import ipmitool
 from ironic.drivers.modules import pxe
 from ironic.drivers.modules import ssh
-
+from ironic.drivers.modules import seamicrotool
 
 class PXEAndIPMIToolDriver(base.BaseDriver):
     """PXE + IPMITool driver.
