@@ -53,6 +53,7 @@ class PXEAndSeamicroToolDriver(base.BaseDriver):
         self.power = seamicrotool.SeamicroPower()
         self.deploy = pxe.PXEDeploy()
         self.rescue = self.deploy
+        self.vendor = seamicrotool.VendorPassthru()
 
 class PXEAndSSHDriver(base.BaseDriver):
     """PXE + SSH driver.

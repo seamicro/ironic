@@ -39,6 +39,7 @@ from ironic.openstack.common import excutils
 from ironic.openstack.common import jsonutils as json
 from ironic.openstack.common import log as logging
 from ironic.openstack.common import loopingcall
+from ironic.db import api as db_api
 
 opts = [
     cfg.StrOpt('terminal',
@@ -78,15 +79,9 @@ def _make_password_file(password):
 
 
 def _parse_driver_info(node):
-    LOG.debug("driver_info = %s" % (node.get('driver_info', '')))
-    #driver_info = json.loads(node.get('driver_info', ''))
     driver_info = node.get('driver_info', '')
-    LOG.debug("driver_info = %s" % (driver_info))
-    #seamicro_info = driver_info.get('seamicro')
     seamicro_info = driver_info
-    LOG.debug("seamicro_info = %s" % (seamicro_info))
     address = seamicro_info.get('address', None)
-    LOG.debug("address = %s" % (address))
     username = seamicro_info.get('username', None)
     password = seamicro_info.get('password', None)
     ccard = seamicro_info.get('ccard', None)
@@ -138,10 +133,8 @@ def _connect(hostname, username, password, command):
         return 0, outputBuffer
 
 def _exec_seamicrotool(driver_info, command):
-
     returnCode, commandOutput = _connect(driver_info['address'], driver_info['username'], driver_info['password'], command)
-    LOG.debug(_("seamicro stdout: '%(out)s', stderr: '%(err)s'"),
-                  locals())
+    LOG.debug("seamicro command: %s returned: '%s', stderr: '%s'" % (command,commandOutput,returnCode))
     return commandOutput,returnCode
 
 def _power_on(driver_info):
@@ -334,3 +327,150 @@ class SeamicroPower(base.PowerInterface):
             # TODO(deva): validate (out, err) and add unit test for failure
         except Exception:
             raise exception.SeamicroFailure(cmd=cmd1)
+
+class VendorPassthru(base.VendorInterface):
+    """Handle SeaMicro-specific APIs"""
+
+    def validate(self, node, **kwargs):
+        """
+        Return True if method in list of implemented methods
+        """
+        LOG.debug("validate() called")
+        
+        allowedMethods = ['set_disk_size','set_vlan']
+        method = kwargs['method']
+        
+        if method in allowedMethods:
+            LOG.debug("validate() - allowed method called")
+            return True
+        else:
+            raise exception.InvalidParameterValue(_(
+                "Unsupported method (%s) passed to SeaMicro driver.")
+                % method)
+
+        return False
+    
+    def vendor_passthru(self, task, node, **kwargs):
+        """
+        Dispatch vendor API call to proper process
+        """
+        LOG.debug("vendor_passthru called")
+        method = kwargs['method']
+        if method == 'set_disk_size':
+            return self.set_disk_size(node,**kwargs)
+        elif method == 'set_vlan':
+            return self.set_vlan(node,**kwargs)
+
+    def set_disk_size(self, node, **kwargs):
+        """
+        Function to create & assign volume of requested size
+        Size passed in as kwargs['size']
+        Assumes S-Card in volume mode
+        TODO: think about how to restrict to allowed S-cards
+        """
+        LOG.debug("set_disk_size() function called")
+        
+        driver_info = _parse_driver_info(node)
+        disk_size_requested = kwargs.get('size')
+        LOG.debug("size requested = %s" % (disk_size_requested))
+        
+        if not disk_size_requested:
+            raise exception.InvalidParameterValue(_("No disk size specified"))
+        
+        """
+          VIKRANT : we need the disk size to be mentioned in GB ex -- 30,40 instead of 
+          30000,40000 etc
+        """
+        pool_dict = {}
+        cmd = 'enable;show storage pool 6/all brief| exclude (entr\\|---\\|slot\\|Mounted)'
+        cmdOutput, err = _exec_seamicrotool(driver_info, cmd)
+        flag = 0
+        found_a_pool_flag = 0
+        pool_for_volume_creation = ""
+        for line in cmdOutput.splitlines():
+            if flag == 0:
+                flag = 1
+            else:
+                # pool dictionary here
+                pool_dict[line.split()[0] + "/" + line.split()[1]] = int(line.split()[3].split(".")[0])
+
+        for names,freesize in pool_dict.items():
+            # leave some space as backup
+            if (freesize - disk_size_requested) > 5:
+                pool_for_volume_creation = names
+                found_a_pool_flag = 1
+                break
+            if found_a_pool_flag == 0:
+                   LOG.debug(_("No free space on the scard."))
+                
+        """
+        Vikrant : We have to come up with a unique volume name scheme uuid function in python               
+        """
+        if pool_for_volume_creation != "":
+             cmd1 = 'enable;storage create volume ' + pool_for_volume_creation + '/ironic-volume size 30'
+             try:
+                 cmdOutput, err = _exec_seamicrotool(driver_info, cmd1)
+             except Exception:
+                 raise exception.SeamicroFailure(cmd=cmd1) 
+             cmd1 = "enable;conf t;storage assign " + driver_info['ccard'] + " 0 volume " + pool_for_volume_creation + "/ironic-volume"
+             try:
+                 out, err = _exec_seamicrotool(driver_info, cmd1)
+             except Exception:
+                 raise exception.SeamicroFailure(cmd=cmd1)
+        
+        """
+        Only set disk properties if operation succeeded
+        Todo: figure out what value of 'out' needed to test
+        Todo: may need to do this async
+        """
+        
+        if True:
+            dbapi = db_api.get_instance()
+            properties = node['properties']
+            properties['disk'] = disk_size_requested
+            res = dbapi.update_node(node['id'],{'properties': properties})
+
+        return True
+    
+    def set_vlan(self, node, **kwargs):
+        """
+        Function to set VLAN of node to specified value
+        VLAN passed in as kwargs['vlan']
+        Only untagged supported
+        Assumes VLAN already created as system VLAN
+        """
+        LOG.debug("set_vlan() function called")
+        
+        driver_info = _parse_driver_info(node)
+        vlan_requested = kwargs.get('vlan')
+        LOG.debug("vlan requested = %s" % (vlan_requested))
+        
+        if not vlan_requested:
+            raise exception.InvalidParameterValue(_("No VLAN specified"))
+        
+        """
+          Make a call here for VLAN assignment. Just configure on NIC 0
+        """
+        basecmd = "enable;conf t;server id " + driver_info['ccard'] + ";nic 0;"
+        cmd1 = "show configuration | include untagged-vlan"
+        cmd2 = "untagged-vlan " + str(vlan_requested)
+        try:
+            out, err = _exec_seamicrotool(driver_info, basecmd + cmd1)
+            out, err = _exec_seamicrotool(driver_info, basecmd + "no " + out)
+            out, err = _exec_seamicrotool(driver_info, basecmd + cmd2)
+        except Exception:
+            raise exception.SeamicroFailure(cmd=cmd1)
+        
+        """
+        Only set VLAN properties if operation succeeded
+        Todo: figure out what value of 'out' needed to test
+        Todo: may need to do this async
+        """
+        
+        if True:
+            dbapi = db_api.get_instance()
+            properties = node['properties']
+            properties['vlan'] = vlan_requested
+            res = dbapi.update_node(node['id'],{'properties': properties})
+
+        return True
