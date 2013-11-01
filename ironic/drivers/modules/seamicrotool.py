@@ -361,6 +361,16 @@ class VendorPassthru(base.VendorInterface):
         elif method == 'set_vlan':
             return self.set_vlan(node,**kwargs)
 
+    def power_on_using_pxe(self,node):
+        LOG.debug("power_on_usin_pxe() function called")
+
+        driver_info = _parse_driver_info(node)
+        try:
+            cmd1 = "enable;power-on server " + driver_info['ccard'] + " using-pxe no-confirm"
+            out, err = _exec_seamicrotool(driver_info, cmd1)
+        except Exception:
+            raise exception.SeamicroFailure(cmd=cmd1)
+
     def set_disk_size(self, node, **kwargs):
         """
         Function to create & assign volume of requested size
